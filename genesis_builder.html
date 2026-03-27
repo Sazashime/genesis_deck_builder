@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Genesys Lab 2026 - Master Build</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+    <style>
+        body { background: #020617; color: #f1f5f9; font-family: sans-serif; overflow-x: hidden; }
+        .deck-box { background: #0f172a; border: 2px solid #1e293b; min-height: 140px; border-radius: 12px; padding: 12px; display: flex; flex-wrap: wrap; gap: 8px; }
+        .card-slot { width: 70px; height: 102px; position: relative; cursor: grab; }
+        .card-img { width: 100%; height: 100%; border-radius: 4px; border: 1px solid #334155; pointer-events: none; }
+        .pts-tag { position: absolute; top: -5px; right: -5px; background: #ef4444; color: white; font-size: 10px; font-weight: 900; padding: 2px 5px; border-radius: 4px; border: 1px solid white; z-index: 50; }
+        .over-limit { color: #f87171 !important; text-shadow: 0 0 15px rgba(239, 68, 68, 0.6); }
+    </style>
+</head>
+<body class="p-8">
+
+    <div class="max-w-7xl mx-auto">
+        <div class="bg-slate-900 p-8 rounded-3xl border-b-8 border-yellow-500 mb-10 shadow-2xl flex justify-between items-center">
+            <div class="flex items-center gap-6">
+                <div class="bg-yellow-500 text-black px-4 py-2 rounded-xl font-black italic text-2xl">G-L</div>
+                <div>
+                    <h1 class="text-4xl font-black italic text-white uppercase">GENESYS <span class="text-yellow-500">LAB</span></h1>
+                    <p class="text-xs text-slate-500 font-bold uppercase tracking-widest">Master Protocol 2026</p>
+                </div>
+            </div>
+            <div class="text-center bg-black/40 px-10 py-4 rounded-2xl border border-white/5">
+                <p id="total-pts" class="text-6xl font-mono font-black text-emerald-400">0/100</p>
+            </div>
+            <div class="flex gap-3">
+                <input type="file" id="import-ydk" class="hidden" accept=".ydk">
+                <button onclick="document.getElementById('import-ydk').click()" class="bg-blue-600 hover:bg-blue-500 text-white font-bold px-6 py-4 rounded-xl text-sm transition">IMPORT .YDK</button>
+                <button onclick="exportYDK()" class="bg-yellow-500 hover:bg-yellow-400 text-black font-black px-6 py-4 rounded-xl text-sm transition">EXPORT .YDK</button>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-12 gap-10">
+            <div class="col-span-12 lg:col-span-4 space-y-4">
+                <input type="text" id="search" placeholder="Search cards..." class="w-full bg-slate-900 border-2 border-slate-800 p-5 rounded-2xl outline-none focus:border-yellow-500 text-xl font-bold transition">
+                <div id="results" class="grid grid-cols-3 gap-3 h-[700px] overflow-y-auto bg-black/20 p-4 rounded-2xl border border-slate-800"></div>
+            </div>
+
+            <div class="col-span-12 lg:col-span-8 space-y-8">
+                <div>
+                    <h2 class="text-xs font-black text-slate-500 uppercase mb-2 px-2">Main Deck (<span id="count-main">0</span>)</h2>
+                    <div id="main-deck" class="deck-box"></div>
+                </div>
+                <div class="grid grid-cols-2 gap-8">
+                    <div>
+                        <h2 class="text-xs font-black text-blue-400 uppercase mb-2 px-2 text-right">Extra Deck (<span id="count-extra">0</span>)</h2>
+                        <div id="extra-deck" class="deck-box border-blue-900/30"></div>
+                    </div>
+                    <div>
+                        <h2 class="text-xs font-black text-emerald-400 uppercase mb-2 px-2">Side Deck (<span id="count-side">0</span>)</h2>
+                        <div id="side-deck" class="deck-box border-emerald-900/30"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const officialPoints = {
+            "Abyss Dweller": 100, "Zaborg the Mega Monarch": 100, "Skill Drain": 100,
+            "Beatrice, Lady of the Eternal": 100, "Ash Blossom & Joyous Spring": 20,
+            "Infinite Impermanence": 12, "Droll & Lock Bird": 20, "Pot of Greed": 30,
+            "Hot Red Dragon Archfiend King Calamity": 21, "Hot Red Dragon Archfiend Abyss": 20
+        };
+
+        const mainDeck = document.getElementById('main-deck');
+        const extraDeck = document.getElementById('extra-deck');
+        const sideDeck = document.getElementById('side-deck');
+
+        function isExtra(type) { return type.includes("Fusion") || type.includes("Synchro") || type.includes("Xyz"); }
+
+        function getCardCount(name) {
+            return document.querySelectorAll(`[data-name="${name}"]`).length;
+        }
+
+        function createCard(card, pts) {
+            const div = document.createElement('div');
+            div.className = 'card-slot';
+            div.dataset.id = card.id;
+            div.dataset.pts = pts;
+            div.dataset.type = card.type;
+            div.dataset.name = card.name;
+            div.innerHTML = `<img src="${card.card_images[0].image_url_small}" class="card-img">${pts > 0 ? `<div class="pts-tag">${pts}</div>` : ''}`;
+            
+            // REMOVAL FUNCTIONALITY
+            div.ondblclick = () => { div.remove(); update(); };
+            div.oncontextmenu = (e) => { 
+                e.preventDefault(); 
+                div.remove(); 
+                update(); 
+            };
+            
+            return div;
+        }
+
+        async function doSearch(val) {
+            if (val.length <= 3) return;
+            const r = await fetch(`https://db.ygoprodeck.com/api/v7/cardinfo.php?fname=${encodeURIComponent(val)}&misc=yes`);
+            const d = await r.json();
+            if (!d.data) return;
+            const resDiv = document.getElementById('results');
+            resDiv.innerHTML = '';
+            d.data.forEach(card => {
+                if (card.type.includes("Link") || card.type.includes("Pendulum")) return;
+                const pts = officialPoints[card.name] || (card.misc_info?.[0]?.genesys_points || 0);
+                const el = createCard(card, pts);
+                el.onclick = () => {
+                    // Check if adding this one would exceed 3 copies
+                    if (getCardCount(card.name) > 3) return alert("Limit: 3 copies total!");
+                    const target = isExtra(card.type) ? extraDeck : mainDeck;
+                    target.appendChild(createCard(card, pts));
+                    update();
+                };
+                resDiv.appendChild(el);
+            });
+        }
+
+        function update() {
+            let total = 0;
+            [mainDeck, extraDeck, sideDeck].forEach(area => {
+                area.querySelectorAll('.card-slot').forEach(slot => total += parseInt(slot.dataset.pts || 0));
+            });
+            document.getElementById('total-pts').innerText = `${total}/100`;
+            document.getElementById('total-pts').className = total > 100 ? "text-6xl font-mono font-black over-limit" : "text-6xl font-mono font-black text-emerald-400";
+            document.getElementById('count-main').innerText = mainDeck.children.length;
+            document.getElementById('count-extra').innerText = extraDeck.children.length;
+            document.getElementById('count-side').innerText = sideDeck.children.length;
+        }
+
+        // DRAG & DROP RULES
+        new Sortable(mainDeck, { 
+            group: 'shared', 
+            animation: 150, 
+            onEnd: update,
+            onAdd: (evt) => {
+                if (isExtra(evt.item.dataset.type)) {
+                    sideDeck.appendChild(evt.item);
+                    alert("Extra Deck monsters cannot enter the Main Deck!");
+                }
+            }
+        });
+
+        new Sortable(sideDeck, { group: 'shared', animation: 150, onEnd: update });
+
+        new Sortable(extraDeck, { 
+            group: {
+                name: 'shared',
+                put: (to, from, dragEl) => isExtra(dragEl.dataset.type)
+            },
+            animation: 150,
+            onEnd: update
+        });
+
+        // IMPORT FIX
+        document.getElementById('import-ydk').onchange = async (e) => {
+            const reader = new FileReader();
+            reader.onload = async () => {
+                const lines = reader.result.split('\n');
+                let mode = 'main';
+                mainDeck.innerHTML = ''; extraDeck.innerHTML = ''; sideDeck.innerHTML = '';
+                for (let id of lines) {
+                    id = id.trim();
+                    if (id === '#main') mode = 'main';
+                    else if (id === '#extra') mode = 'extra';
+                    else if (id === '!side') mode = 'side';
+                    else if (id.length > 3 && !id.startsWith('#')) {
+                        const r = await fetch(`https://db.ygoprodeck.com/api/v7/cardinfo.php?id=${id}&misc=yes`);
+                        const d = await r.json();
+                        if (d.data) {
+                            const c = d.data[0];
+                            const pts = officialPoints[c.name] || (c.misc_info?.[0]?.genesys_points || 0);
+                            const target = mode === 'main' ? mainDeck : (mode === 'extra' ? extraDeck : sideDeck);
+                            target.appendChild(createCard(c, pts));
+                        }
+                    }
+                }
+                update();
+            };
+            reader.readAsText(e.target.files[0]);
+        };
+
+        function exportYDK() {
+            let ydk = "#main\n";
+            mainDeck.querySelectorAll('.card-slot').forEach(i => ydk += i.dataset.id + "\n");
+            ydk += "#extra\n";
+            extraDeck.querySelectorAll('.card-slot').forEach(i => ydk += i.dataset.id + "\n");
+            ydk += "!side\n";
+            sideDeck.querySelectorAll('.card-slot').forEach(i => ydk += i.dataset.id + "\n");
+            const blob = new Blob([ydk], {type: 'text/plain'});
+            const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'deck.ydk'; a.click();
+        }
+
+        document.getElementById('search').oninput = (e) => doSearch(e.target.value);
+    </script>
+</body>
+</html>
